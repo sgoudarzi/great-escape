@@ -18,6 +18,10 @@
   .status { text-align:center; font-size:1.1rem; font-weight:700; min-height:1.8em; margin:8px 0 4px; }
   .row { display:flex; gap:8px; justify-content:center; margin-bottom:6px; }
   button { font:inherit; font-weight:700; border:none; border-radius:12px; padding:8px 16px; color:#fff; background:#a98a74; cursor:pointer; touch-action:manipulation; }
+  .fact { text-align:center; font-size:.9rem; background:#fff3c9; border-radius:14px; padding:8px 12px; margin-top:6px; display:none; }
+  .lvls { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin-top:8px; }
+  .lvls button { background:#fff; color:#3b2a1f; border:2px solid #f7b6c2; padding:4px 2px; font-size:.8rem; line-height:1.15; }
+  .lvls button.cur { background:#f7b6c2; }
   .how, .science { font-size:.88rem; line-height:1.45; background:#fff; border-radius:14px; padding:10px 14px; margin-top:8px; }
   .fine { text-align:center; font-size:.8rem; opacity:.6; margin-top:10px; }
   .p1 { color:#ff7a59; font-weight:700; } .p2 { color:#4aa3df; font-weight:700; }
@@ -30,9 +34,11 @@
   <div class="name">Dedicated to <input id="who" value="Alex" maxlength="30"></div>
   <canvas id="c" width="720" height="720"></canvas>
   <div class="status" id="status"></div>
-  <div class="row"><button id="restart">↺ Restart round</button><button id="skip">Skip ➜</button></div>
+  <div class="row"><button id="restart">↺ Restart round</button><button id="skip">Skip ➜</button><button id="mute">🔊</button></div>
+  <div class="fact" id="fact"></div>
+  <div class="lvls" id="levels"></div>
   <div class="how">
-    <b>How to play.</b> Drag either end of the stretchy tube with one finger. An end stays pinned 📌 where you let go, so move one end, then the other. Tilt the tube so the plug slides, sweep it through 💧 to soften it, and bring an open end to the 🚽. The tube wraps around pegs, pushes crates and presses the red button, which opens the door. Pull the ends far apart to squeeze the plug loose. Later rounds add 🧀 that firms the plug up, purple pegs that move, and a 🔒 that opens once every 💧 is collected.
+    <b>How to play.</b> Drag either end of the stretchy tube with one finger. An end stays pinned 📌 where you let go, so move one end, then the other. Tilt the tube so the plug slides, sweep it through 💧 to soften it, and bring an open end to the 🚽. The tube wraps around pegs, pushes crates and presses the red button, which opens the door. Pull the ends far apart to squeeze the plug loose. Later rounds add 🧀 that firms the plug up, purple pegs that move, and a 🔒 that opens once every 💧 is collected. Fans 🌀 blow the tube upward, and prune juice 🧃 gives 8 seconds of turbo. Finish fast with no misses for ⭐⭐⭐.
   </div>
   <div class="science">
     <b>The physics (yes, it's real).</b> The plug is a yield-stress material. It stays put until the tilt gives g·sinθ &gt; τ<sub>y</sub>, so there is a critical angle below which nothing moves. Water lowers τ<sub>y</sub>, and stretching the tube squeezes the plug and helps it yield. Rigid-body physics by Planck.js.
@@ -72,11 +78,40 @@ const LEVELS = [
     movers:[[13.5,17,16,2.5]], cheese:[[14,9],[17,14]], drops:[[12,5],[20,6],[15,19]] },
   { hint:'The boss round. Everything you have learned! 👑', thc:50, goal:[20.7,21.9], alcove:true, lock:true, pegs:[[14,16.5]],
     ledges:[[9,10,3,0.3]], button:{x0:7, x1:9.4, y:9.7}, movers:[[3,10,17,3]], cheese:[[13,6],[18,11],[5,20]],
-    drops:[[3,5],[19,4],[12,21]] }
+    drops:[[3,5],[19,4],[12,21]] },
+  { hint:'The fan 🌀 lifts the tube. Use the draft, or fight it!', thc:42, goal:[20,21.9], fans:[[12,17,3,6.4,22]],
+    pegs:[[6,12],[18,12]], juice:[[12,4]], drops:[[12,8],[4,16],[20,15]] },
+  { hint:'Prune juice 🧃 gives 8 seconds of turbo. Time it right!', thc:56, goal:[3,21.9], pegs:[[10,10]],
+    movers:[[4,12,18,3]], cheese:[[8,14],[14,18]], juice:[[16,8]], drops:[[20,14]] },
+  { hint:'Grand finale: fan, cheese, lock and door 🎆', thc:50, goal:[20.7,21.9], alcove:true, lock:true,
+    ledges:[[7,13,3,0.3]], button:{x0:5, x1:7.4, y:12.7}, fans:[[13,18,2,5.4,22]], movers:[[9,16,8,3]],
+    cheese:[[15,12],[10,19]], juice:[[3,4]], drops:[[4,18],[19,6],[13,21]] }
+];
+const FACTS = [
+  'Your small intestine is about 6 metres long, folded up neatly inside you.',
+  'Peristalsis works against gravity. Astronauts digest dinner just fine in orbit.',
+  'Ketchup, toothpaste and mayonnaise are yield-stress fluids too. They sit still until pushed hard enough.',
+  'Stool is roughly three quarters water, which is why the 💧 drops matter so much.',
+  'A 2017 fluid mechanics study found most mammals take about 12 seconds to go, from cats to elephants.',
+  'Your gut has its own nervous system with hundreds of millions of neurons.',
+  'A thin mucus layer lubricates the gut wall, like oil in a pipeline.',
+  'A walk helps. Moving your body nudges the gut to move too.'
 ];
 
 let level = 1, world, ground, hA, hB, all, pts = [], statics, pegs, crate, button, door, doorOpen, goal, drops, plug;
-let movers = [], cheese = [], locked = false;
+let movers = [], cheese = [], locked = false, fans = [], juice = [];
+let rt = 0, misses = 0, started = false, muted = false, AC = null, stars = {};
+try { stars = JSON.parse(localStorage.getItem('ge_stars') || '{}') || {}; } catch(_){ stars = {}; }
+function beep(f, d, type, vol, slide){ if (muted) return; try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === 'suspended') AC.resume();
+  const o = AC.createOscillator(), g = AC.createGain(), t = AC.currentTime; o.type = type || 'sine'; o.frequency.setValueAtTime(f, t); if (slide) o.frequency.exponentialRampToValueAtTime(slide, t+d);
+  g.gain.setValueAtTime(vol || 0.15, t); g.gain.exponentialRampToValueAtTime(0.001, t+d); o.connect(g); g.connect(AC.destination); o.start(); o.stop(t+d); } catch(_){} }
+const sfx = { drop:() => beep(700,.18,'sine',.15,1300), cheese:() => beep(220,.3,'sawtooth',.08,110), miss:() => beep(300,.35,'triangle',.12,120), door:() => beep(400,.15,'square',.06,650),
+  juice:() => beep(300,.4,'sine',.15,1500), grab:() => beep(520,.06,'sine',.06), win:() => [523,659,784,1047].forEach((f,i) => setTimeout(() => beep(f,.28,'triangle',.15), i*120)) };
+function locked0(){ return !!LEVELS[(level-1) % LEVELS.length].lock; }
+function TH(){ const t = Math.max(8, thc - 9*plug.soft + 8*plug.hard); return plug.turbo > 0 ? t*0.5 : t; }
+function renderLevels(){ const cur = ((level-1) % LEVELS.length) + 1; let h = '';
+  for (let i=1;i<=LEVELS.length;i++){ const n = stars[i] || 0; h += '<button data-l="' + i + '"' + (i === cur ? ' class="cur"' : '') + '>' + i + '<br>' + ('⭐'.repeat(n) || '·') + '</button>'; }
+  $('levels').innerHTML = h; }
 let conf = [], msgT = 0, winT = 0, stretch = 1, tilt = 0, thc = 30;
 let owners = {};
 
@@ -105,6 +140,9 @@ function build(){
   drops = d.drops.map(p => ({x:p[0]*S, y:p[1]*S, got:false}));
   cheese = (d.cheese || []).map(p => ({x:p[0]*S, y:p[1]*S, got:false}));
   locked = !!d.lock;
+  fans = (d.fans || []).map(f => ({cx:f[0], cy:f[1], hx:f[2], hy:f[3], f:f[4]}));
+  juice = (d.juice || []).map(p => ({x:p[0]*S, y:p[1]*S, got:false}));
+  rt = 0; misses = 0; started = false; renderLevels();
   movers = (d.movers || []).map(m => { const b = world.createKinematicBody(V(m[0], m[2])); b.createFixture(pl.Circle(0.7), {friction:0.3});
     b.setLinearVelocity(V(m[3], 0)); return {b:b, x0:m[0], x1:m[1], v:m[3]}; });
 
@@ -119,7 +157,7 @@ function build(){
     const j = world.createJoint(pl.DistanceJoint({frequencyHz:8, dampingRatio:0.9}, all[i], all[i+1], all[i].getPosition(), all[i+1].getPosition()));
     j.setLength(SEG);
   }
-  plug = {u:NSEG/2, w:0, soft:0, hard:0, x:360, y:150};
+  plug = {u:NSEG/2, w:0, soft:0, hard:0, turbo:0, x:360, y:150};
   thc = d.thc + 4*Math.floor((level-1)/LEVELS.length);
   winT = 0;
   $('lv').textContent = level <= LEVELS.length ? level + ' of ' + LEVELS.length : level + ' (bonus)';
@@ -128,13 +166,15 @@ function build(){
 build();
 $('restart').onclick = build;
 $('skip').onclick = () => { level++; build(); };
+$('mute').onclick = () => { muted = !muted; $('mute').textContent = muted ? '🔇' : '🔊'; };
+$('levels').onclick = e => { const b = e.target && e.target.closest ? e.target.closest('button') : null; if (b){ level = +b.getAttribute('data-l'); build(); } };
 
 function pos(e){ const r = cv.getBoundingClientRect(); return {x:(e.clientX-r.left)*W/r.width/S, y:(e.clientY-r.top)*H/r.height/S}; }
 cv.addEventListener('pointerdown', e => {
   const p = pos(e); let best = null, bd = 3.3;
   [hA,hB].forEach(h => { const taken = Object.values(owners).some(o => o.h === h); const q = h.getPosition(); const d = Math.hypot(p.x-q.x, p.y-q.y); if (!taken && d < bd){ bd = d; best = h; } });
   if (best){
-    best.setDynamic();
+    best.setDynamic(); started = true; sfx.grab();
     const j = world.createJoint(pl.MouseJoint({maxForce: 3000*best.getMass(), frequencyHz:6, dampingRatio:0.9}, ground, best, V(best.getPosition().x, best.getPosition().y)));
     owners[e.pointerId] = {h:best, j:j};
     try { cv.setPointerCapture(e.pointerId); } catch(_){}
@@ -155,6 +195,8 @@ cv.addEventListener('pointerup', release); cv.addEventListener('pointercancel', 
 
 function step(dt){
   movers.forEach(m => { const x = m.b.getPosition().x; if (x > m.x1) m.b.setLinearVelocity(V(-m.v, 0)); else if (x < m.x0) m.b.setLinearVelocity(V(m.v, 0)); });
+  fans.forEach(z => { const lift = b => { const p = b.getPosition(); if (Math.abs(p.x-z.cx) < z.hx && Math.abs(p.y-z.cy) < z.hy) b.applyForceToCenter(V(0, -z.f*b.getMass()), true); };
+    all.forEach(lift); if (crate) lift(crate); });
   world.step(1/60, 8, 4);
   pts = all.map(b => { const p = b.getPosition(); return {x:p.x*S, y:p.y*S}; });
   let L = 0; for (let i=0;i<NSEG;i++) L += Math.hypot(pts[i+1].x-pts[i].x, pts[i+1].y-pts[i].y);
@@ -164,7 +206,7 @@ function step(dt){
   if (door){
     const bodies = (button && button.crateOnly) ? [crate] : (crate ? all.concat([crate]) : all);
     const pressed = button && bodies.some(b => { const p = b.getPosition(); return p.x > button.x0 && p.x < button.x1 && p.y < button.y && p.y > button.y - 1.7; });
-    if (pressed && !doorOpen){ doorOpen = true; door.setActive(false); say('Door open! Go go go! 🚪', 2); }
+    if (pressed && !doorOpen){ doorOpen = true; door.setActive(false); say('Door open! Go go go! 🚪', 2); sfx.door(); }
     else if (!pressed && doorOpen){
       const blocked = all.some(b => { const p = b.getPosition(); return p.x > 17.4 && p.y > 17.2; });
       if (!blocked){ doorOpen = false; door.setActive(true); }
@@ -174,10 +216,12 @@ function step(dt){
 
   if (winT > 0){ winT += dt; if (winT > 2.8){ level++; build(); } }
   else {
+    if (started) rt += dt;
+    if (plug.turbo > 0) plug.turbo -= dt;
     const i = Math.max(0, Math.min(NSEG-1, Math.floor(plug.u)));
     const p = pts[i], q = pts[i+1], len = Math.hypot(q.x-p.x, q.y-p.y) || 1e-6;
     const sin = (q.y-p.y)/len, drive = G*sin;
-    const th = Math.max(8, thc - 9*plug.soft + 8*plug.hard);
+    const th = TH();
     const ty = G*Math.sin(th*Math.PI/180)*(stretch > 1.25 ? 0.6 : 1);
     tilt = Math.asin(Math.min(1, Math.abs(sin)))*180/Math.PI;
     if (Math.abs(plug.w) < 3 && Math.abs(drive) <= ty) plug.w = 0;
@@ -186,21 +230,26 @@ function step(dt){
     const f = Math.max(0, Math.min(1, plug.u - i));
     plug.x = p.x + (q.x-p.x)*f; plug.y = p.y + (q.y-p.y)*f;
 
-    drops.forEach(d => { if (!d.got && Math.hypot(d.x-plug.x, d.y-plug.y) < 32){ d.got = true; plug.soft++; say('Splash! Softer and slipperier 💧'); } });
+    drops.forEach(d => { if (!d.got && Math.hypot(d.x-plug.x, d.y-plug.y) < 32){ d.got = true; plug.soft++; say('Splash! Softer and slipperier 💧'); sfx.drop(); } });
 
-    cheese.forEach(d => { if (!d.got && Math.hypot(d.x-plug.x, d.y-plug.y) < 32){ d.got = true; plug.hard++; say('Oh no, cheese! The plug got firmer 🧀'); } });
-    if (locked && drops.every(d => d.got)){ locked = false; say('Unlocked! 🔓 Head for the 🚽'); }
+    cheese.forEach(d => { if (!d.got && Math.hypot(d.x-plug.x, d.y-plug.y) < 32){ d.got = true; plug.hard++; say('Oh no, cheese! The plug got firmer 🧀'); sfx.cheese(); } });
+    juice.forEach(d => { if (!d.got && Math.hypot(d.x-plug.x, d.y-plug.y) < 32){ d.got = true; plug.turbo = 8; say('Prune juice! Turbo for 8 seconds 🧃', 2.5); sfx.juice(); } });
+    if (locked && drops.every(d => d.got)){ locked = false; say('Unlocked! 🔓 Head for the 🚽'); sfx.door(); }
     if (plug.u <= 0 || plug.u >= NSEG){
       const h = plug.u <= 0 ? pts[0] : pts[NSEG];
       const near = Math.hypot(h.x-goal.x, h.y-goal.y) < 62;
-      if (near && locked){ say('Locked! Collect every 💧 first 🔒', 2.5); plug.u = NSEG/2; plug.w = 0; }
+      if (near && locked){ say('Locked! Collect every 💧 first 🔒', 2.5); plug.u = NSEG/2; plug.w = 0; misses++; sfx.miss(); }
       else if (near){
         winT = 0.001;
+        const par = 45 + (locked0() ? 30 : 0), n = (rt <= par && misses === 0) ? 3 : (rt <= 2*par && misses <= 2) ? 2 : 1;
+        const key = ((level-1) % LEVELS.length) + 1; if (n > (stars[key] || 0)){ stars[key] = n; try { localStorage.setItem('ge_stars', JSON.stringify(stars)); } catch(_){} }
+        renderLevels(); sfx.win();
+        $('fact').style.display = 'block'; $('fact').textContent = '⭐'.repeat(n) + '  in ' + Math.round(rt) + ' s.  Did you know? ' + FACTS[(level-1) % FACTS.length];
         const who = $('who').value.trim() || 'friend';
         say(level === LEVELS.length ? '🏆 ALL ROUNDS CLEARED! Get well soon, ' + who + '! 🏆' : '🎉 FREEDOM! Get well soon, ' + who + '! 🎉', 3);
         for (let k=0;k<140;k++) conf.push({x:goal.x, y:goal.y-20, vx:-200+Math.random()*400, vy:-420+Math.random()*260, c:`hsl(${Math.random()*360},85%,60%)`, r:3+Math.random()*4, rot:Math.random()*6});
       } else {
-        say('Oops, missed the potty! Bring the open end to 🚽', 2.5);
+        say('Oops, missed the potty! Bring the open end to 🚽', 2.5); misses++; sfx.miss();
         plug.u = NSEG/2; plug.w = 0;
       }
     }
@@ -215,6 +264,10 @@ function step(dt){
 function draw(){
   ctx.clearRect(0,0,W,H);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  fans.forEach(z => { ctx.fillStyle = 'rgba(120,190,255,.18)'; ctx.fillRect((z.cx-z.hx)*S, (z.cy-z.hy)*S, z.hx*2*S, z.hy*2*S);
+    ctx.strokeStyle = 'rgba(80,150,230,.55)'; ctx.lineWidth = 3; const ph = (performance.now()/12) % 60;
+    for (let y = (z.cy+z.hy)*S - ph; y > (z.cy-z.hy)*S + 10; y -= 60) for (let k=-1;k<=1;k++){ const x = (z.cx + k*z.hx*0.6)*S; ctx.beginPath(); ctx.moveTo(x-8, y+8); ctx.lineTo(x, y); ctx.lineTo(x+8, y+8); ctx.stroke(); }
+    ctx.font = '34px serif'; ctx.fillText('🌀', z.cx*S, (z.cy+z.hy)*S - 20); });
   // level geometry
   ctx.fillStyle = '#b08968';
   statics.forEach(s => ctx.fillRect((s.cx-s.hx)*S, (s.cy-s.hy)*S, s.hx*2*S, s.hy*2*S));
@@ -239,6 +292,7 @@ function draw(){
   movers.forEach(m => { const p = m.b.getPosition(); ctx.fillStyle = '#9b6bd6'; ctx.beginPath(); ctx.arc(p.x*S, p.y*S, 0.7*S, 0, 6.3); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke(); });
   ctx.font = '34px serif';
   cheese.forEach(d => { if (!d.got) ctx.fillText('🧀', d.x, d.y); });
+  juice.forEach(d => { if (!d.got) ctx.fillText('🧃', d.x, d.y); });
   drops.forEach((d,i) => { if (!d.got) ctx.fillText('💧', d.x, d.y + 4*Math.sin(performance.now()/300 + i)); });
   // tube
   const sq = stretch > 1.25;
@@ -249,7 +303,7 @@ function draw(){
   // plug
   if (winT === 0){
     const moving = Math.abs(plug.w) > 3, h = Math.min(1, plug.soft/3);
-    const th = Math.max(8, thc - 9*plug.soft + 8*plug.hard);
+    const th = TH();
     const wob = (!moving && tilt > 0.6*th) ? Math.sin(performance.now()/25)*2 : 0;
     ctx.save(); ctx.translate(plug.x + wob, plug.y);
     ctx.fillStyle = `rgb(${92+70*h|0},${58+50*h|0},${30+30*h|0})`;
@@ -264,6 +318,7 @@ function draw(){
     ctx.fillStyle = '#3b2a1f'; ctx.font = '700 20px "Baloo 2", sans-serif'; ctx.textAlign = 'left';
     const need = sq ? Math.asin(0.6*Math.sin(th*Math.PI/180))*180/Math.PI : th;
     ctx.fillText('tilt ' + tilt.toFixed(0) + '°  /  needs ' + need.toFixed(0) + '°' + (sq ? '  (squeezing!)' : ''), 16, 26);
+    ctx.textAlign = 'right'; ctx.fillText((plug.turbo > 0 ? '🧃 ' + Math.ceil(plug.turbo) + 's   ' : '') + '⏱ ' + Math.round(rt) + ' s', W-16, 26);
     ctx.textAlign = 'center';
   }
   // handles
