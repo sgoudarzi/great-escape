@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Great Escape: a plug-flow simulation</title>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; background:#fff7ef; color:#3b2a1f; font-family:'Baloo 2', system-ui, sans-serif; }
+  .wrap { max-width:720px; margin:0 auto; padding:12px; }
+  h1 { font-size:1.45rem; margin:2px 0 0; text-align:center; }
+  .sub { text-align:center; margin:0 0 6px; opacity:.75; font-size:.95rem; }
+  .name { display:flex; justify-content:center; gap:6px; align-items:center; margin-bottom:8px; font-size:.95rem; }
+  .name input { font:inherit; border:2px solid #f7b6c2; border-radius:10px; padding:2px 8px; width:150px; background:#fff; }
+  canvas { width:100%; height:auto; display:block; border-radius:18px; touch-action:none;
+           background:linear-gradient(#d8f3ff,#fff3c9); box-shadow:0 4px 14px rgba(0,0,0,.08); }
+  .status { text-align:center; font-size:1.1rem; font-weight:700; min-height:1.8em; margin:8px 0 4px; }
+  .row { display:flex; gap:8px; justify-content:center; margin-bottom:6px; }
+  button { font:inherit; font-weight:700; border:none; border-radius:12px; padding:8px 16px; color:#fff; background:#a98a74; cursor:pointer; touch-action:manipulation; }
+  .how, .science { font-size:.88rem; line-height:1.45; background:#fff; border-radius:14px; padding:10px 14px; margin-top:8px; }
+  .fine { text-align:center; font-size:.8rem; opacity:.6; margin-top:10px; }
+  .p1 { color:#ff7a59; font-weight:700; } .p2 { color:#4aa3df; font-weight:700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>The Great Escape 💩</h1>
+  <p class="sub">One-player puzzle · Round <span id="lv">1</span></p>
+  <div class="name">Dedicated to <input id="who" value="Alex" maxlength="30"></div>
+  <canvas id="c" width="720" height="720"></canvas>
+  <div class="status" id="status"></div>
+  <div class="row"><button id="restart">↺ Restart round</button><button id="skip">Skip ➜</button></div>
+  <div class="how">
+    <b>How to play.</b> Drag either end of the stretchy tube with one finger. An end stays pinned 📌 where you let go, so move one end, then the other. Tilt the tube so the plug slides, sweep it through 💧 to soften it, and bring an open end to the 🚽. The tube wraps around pegs, pushes crates and presses the red button, which opens the door. Pull the ends far apart to squeeze the plug loose.
+  </div>
+  <div class="science">
+    <b>The physics (yes, it's real).</b> The plug is a yield-stress material. It stays put until the tilt gives g·sinθ &gt; τ<sub>y</sub>, so there is a critical angle below which nothing moves. Water lowers τ<sub>y</sub>, and stretching the tube squeezes the plug and helps it yield. Rigid-body physics by Planck.js.
+  </div>
+  <div class="fine">Just for fun. Please listen to the nurses, not the game. Get well soon! 💛</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/planck-js@0.3.31/dist/planck.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('c'), ctx = cv.getContext('2d'), W = 720, H = 720;
+const pl = planck, V = pl.Vec2, S = 30;          // 30 px per metre, y points down
+const NSEG = 22, SEG = 0.6, REST = NSEG*SEG, G = 900, FLOOR = 23.4;
+
+const LEVELS = [
+  { hint:'Wrap around the peg and aim an end at the 🚽', thc:30, goal:[12,21.9], pegs:[[12,12]],
+    drops:[[6,14],[18,14],[12,17]] },
+  { hint:'Pin one end on the red button, then take the other to the 🚽', thc:34, goal:[20.7,21.9], alcove:true,
+    ledges:[[7,13,3,0.3]], button:{x0:5, x1:7.4, y:12.7}, drops:[[12,15],[16,18],[10,9]] },
+  { hint:'Push the crate onto the button, then go for it!', thc:38, goal:[20.7,21.9], alcove:true, pegs:[[14,13]],
+    ledges:[[5,10,3,0.3]], crate:[4,8.8], button:{x0:8.3, x1:11.7, y:FLOOR}, drops:[[12,8],[16,16],[19,12]] }
+];
+
+let level = 1, world, ground, hA, hB, all, pts = [], statics, pegs, crate, button, door, doorOpen, goal, drops, plug;
+let conf = [], msgT = 0, winT = 0, stretch = 1, tilt = 0, thc = 30;
+let owners = {};
+
+function say(s, t){ $('status').textContent = s; msgT = t || 2; }
+
+function build(){
+  owners = {};
+  world = pl.World({gravity: V(0, 10)});
+  ground = world.createBody();
+  statics = []; pegs = []; crate = null; button = null; door = null; doorOpen = false;
+  const wall = (cx,cy,hx,hy) => { const b = world.createBody(V(cx,cy)); b.createFixture(pl.Box(hx,hy), {friction:0.6}); statics.push({cx,cy,hx,hy}); return b; };
+  wall(12, FLOOR+0.3, 12, 0.3); wall(12, -0.3, 12, 0.3); wall(-0.3, 12, 0.3, 12); wall(24.3, 12, 0.3, 12);
+  const d = LEVELS[(level-1) % LEVELS.length];
+  (d.ledges || []).forEach(l => wall(l[0], l[1], l[2], l[3]));
+  (d.pegs || []).forEach(p => { const b = world.createBody(V(p[0],p[1])); b.createFixture(pl.Circle(0.7), {friction:0.3}); pegs.push({x:p[0], y:p[1]}); });
+  if (d.alcove){
+    wall(17.7, 20.9, 0.3, 2.5);
+    door = world.createBody(V(20.85, 18.4)); door.createFixture(pl.Box(2.85, 0.3), {friction:0.4});
+  }
+  if (d.crate){
+    crate = world.createDynamicBody({position: V(d.crate[0], d.crate[1]), linearDamping:0.3, angularDamping:2});
+    crate.createFixture(pl.Box(0.9, 0.9), {density:0.6, friction:0.5});
+  }
+  button = d.button || null;
+  goal = {x:d.goal[0]*S, y:d.goal[1]*S};
+  drops = d.drops.map(p => ({x:p[0]*S, y:p[1]*S, got:false}));
+
+  // stretchy tube: two handles + chain of small bodies joined by soft distance joints
+  const ax = 7, bx = 17, y0 = 5;
+  const mk = (x, r, dens) => { const b = world.createDynamicBody({position: V(x, y0), linearDamping:1.5, fixedRotation:true});
+    b.createFixture(pl.Circle(r), {density:dens, friction:0.2, filterGroupIndex:-1}); return b; };
+  all = [];
+  for (let i=0;i<=NSEG;i++){ const end = (i===0 || i===NSEG); all.push(mk(ax + (bx-ax)*i/NSEG, end ? 0.8 : 0.3, end ? 2 : 1)); }
+  hA = all[0]; hB = all[NSEG]; hA.setStatic(); hB.setStatic();
+  for (let i=0;i<NSEG;i++){
+    const j = world.createJoint(pl.DistanceJoint({frequencyHz:8, dampingRatio:0.9}, all[i], all[i+1], all[i].getPosition(), all[i+1].getPosition()));
+    j.setLength(SEG);
+  }
+  plug = {u:NSEG/2, w:0, soft:0, x:360, y:150};
+  thc = d.thc + 4*Math.floor((level-1)/LEVELS.length);
+  winT = 0;
+  $('lv').textContent = level;
+  say(d.hint, 4);
+}
+build();
+$('restart').onclick = build;
+$('skip').onclick = () => { level++; build(); };
+
+function pos(e){ const r = cv.getBoundingClientRect(); return {x:(e.clientX-r.left)*W/r.width/S, y:(e.clientY-r.top)*H/r.height/S}; }
+cv.addEventListener('pointerdown', e => {
+  const p = pos(e); let best = null, bd = 3.3;
+  [hA,hB].forEach(h => { const taken = Object.values(owners).some(o => o.h === h); const q = h.getPosition(); const d = Math.hypot(p.x-q.x, p.y-q.y); if (!taken && d < bd){ bd = d; best = h; } });
+  if (best){
+    best.setDynamic();
+    const j = world.createJoint(pl.MouseJoint({maxForce: 3000*best.getMass(), frequencyHz:6, dampingRatio:0.9}, ground, best, V(best.getPosition().x, best.getPosition().y)));
+    owners[e.pointerId] = {h:best, j:j};
+    try { cv.setPointerCapture(e.pointerId); } catch(_){}
+  }
+  e.preventDefault();
+});
+cv.addEventListener('pointermove', e => {
+  const o = owners[e.pointerId]; if (!o) return;
+  const p = pos(e), q = (o.h === hA ? hB : hA).getPosition();
+  let x = Math.max(0.8, Math.min(23.2, p.x)), y = Math.max(0.8, Math.min(FLOOR-0.8, p.y));
+  const d = Math.hypot(x-q.x, y-q.y), max = REST*1.45;
+  if (d > max){ x = q.x + (x-q.x)*max/d; y = q.y + (y-q.y)*max/d; }
+  o.j.setTarget(V(x, y)); e.preventDefault();
+});
+const release = e => { const o = owners[e.pointerId]; if (!o) return;
+  world.destroyJoint(o.j); o.h.setLinearVelocity(V(0,0)); o.h.setStatic(); delete owners[e.pointerId]; };
+cv.addEventListener('pointerup', release); cv.addEventListener('pointercancel', release);
+
+function step(dt){
+  world.step(1/60, 8, 4);
+  pts = all.map(b => { const p = b.getPosition(); return {x:p.x*S, y:p.y*S}; });
+  let L = 0; for (let i=0;i<NSEG;i++) L += Math.hypot(pts[i+1].x-pts[i].x, pts[i+1].y-pts[i].y);
+  stretch = L/(REST*S);
+
+  // button and door
+  if (door){
+    const bodies = crate ? all.concat([crate]) : all;
+    const pressed = button && bodies.some(b => { const p = b.getPosition(); return p.x > button.x0 && p.x < button.x1 && p.y < button.y && p.y > button.y - 1.7; });
+    if (pressed && !doorOpen){ doorOpen = true; door.setActive(false); say('Door open! Go go go! 🚪', 2); }
+    else if (!pressed && doorOpen){
+      const blocked = all.some(b => { const p = b.getPosition(); return p.x > 17.4 && p.y > 17.2; });
+      if (!blocked){ doorOpen = false; door.setActive(true); }
+    }
+    button.down = !!pressed;
+  }
+
+  if (winT > 0){ winT += dt; if (winT > 2.8){ level++; build(); } }
+  else {
+    const i = Math.max(0, Math.min(NSEG-1, Math.floor(plug.u)));
+    const p = pts[i], q = pts[i+1], len = Math.hypot(q.x-p.x, q.y-p.y) || 1e-6;
+    const sin = (q.y-p.y)/len, drive = G*sin;
+    const th = Math.max(8, thc - 9*plug.soft);
+    const ty = G*Math.sin(th*Math.PI/180)*(stretch > 1.25 ? 0.6 : 1);
+    tilt = Math.asin(Math.min(1, Math.abs(sin)))*180/Math.PI;
+    if (Math.abs(plug.w) < 3 && Math.abs(drive) <= ty) plug.w = 0;
+    else { plug.w += (drive - Math.sign(plug.w || drive)*ty*0.5)*dt; plug.w *= (1 - 1.5*dt); }
+    plug.u += plug.w*dt/len;
+    const f = Math.max(0, Math.min(1, plug.u - i));
+    plug.x = p.x + (q.x-p.x)*f; plug.y = p.y + (q.y-p.y)*f;
+
+    drops.forEach(d => { if (!d.got && Math.hypot(d.x-plug.x, d.y-plug.y) < 32){ d.got = true; plug.soft++; say('Splash! Softer and slipperier 💧'); } });
+
+    if (plug.u <= 0 || plug.u >= NSEG){
+      const h = plug.u <= 0 ? pts[0] : pts[NSEG];
+      if (Math.hypot(h.x-goal.x, h.y-goal.y) < 62){
+        winT = 0.001;
+        const who = $('who').value.trim() || 'friend';
+        say('🎉 FREEDOM! Get well soon, ' + who + '! 🎉', 3);
+        for (let k=0;k<140;k++) conf.push({x:goal.x, y:goal.y-20, vx:-200+Math.random()*400, vy:-420+Math.random()*260, c:`hsl(${Math.random()*360},85%,60%)`, r:3+Math.random()*4, rot:Math.random()*6});
+      } else {
+        say('Oops, missed the potty! Bring the open end to 🚽', 2.5);
+        plug.u = NSEG/2; plug.w = 0;
+      }
+    }
+    if (msgT > 0) msgT -= dt;
+    else if (Math.abs(plug.w) > 3) $('status').textContent = 'Wheee! Now aim for the 🚽';
+    else $('status').textContent = 'Stuck. Tilt steeper, grab 💧, or stretch to squeeze!';
+  }
+  conf.forEach(p => { p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 500*dt; p.rot += 5*dt; });
+  conf = conf.filter(p => p.y < H + 20);
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  // level geometry
+  ctx.fillStyle = '#b08968';
+  statics.forEach(s => ctx.fillRect((s.cx-s.hx)*S, (s.cy-s.hy)*S, s.hx*2*S, s.hy*2*S));
+  pegs.forEach(p => { ctx.fillStyle = '#7fb77e'; ctx.beginPath(); ctx.arc(p.x*S, p.y*S, 0.7*S, 0, 6.3); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke(); });
+  if (door){
+    ctx.fillStyle = doorOpen ? 'rgba(200,80,80,.15)' : '#c85050';
+    ctx.fillRect(18*S, 18.1*S, 5.7*S, 0.6*S);
+  }
+  if (button){
+    const bh = button.down ? 4 : 10;
+    ctx.fillStyle = '#e53935'; ctx.fillRect(button.x0*S, button.y*S - bh, (button.x1-button.x0)*S, bh);
+  }
+  if (crate){
+    const p = crate.getPosition();
+    ctx.save(); ctx.translate(p.x*S, p.y*S); ctx.rotate(crate.getAngle());
+    ctx.fillStyle = '#e0a458'; ctx.fillRect(-27,-27,54,54); ctx.strokeStyle = '#a66a1f'; ctx.lineWidth = 4; ctx.strokeRect(-25,-25,50,50);
+    ctx.beginPath(); ctx.moveTo(-25,-25); ctx.lineTo(25,25); ctx.moveTo(25,-25); ctx.lineTo(-25,25); ctx.stroke(); ctx.restore();
+  }
+  // goal and drops
+  ctx.font = '56px serif'; ctx.fillText('🚽', goal.x, goal.y);
+  ctx.font = '34px serif';
+  drops.forEach((d,i) => { if (!d.got) ctx.fillText('💧', d.x, d.y + 4*Math.sin(performance.now()/300 + i)); });
+  // tube
+  const sq = stretch > 1.25;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const path = () => { ctx.beginPath(); pts.forEach((p,i) => i ? ctx.lineTo(p.x,p.y) : ctx.moveTo(p.x,p.y)); };
+  path(); ctx.strokeStyle = sq ? '#d9647f' : '#e48aa0'; ctx.lineWidth = sq ? 26 : 32; ctx.stroke();
+  path(); ctx.strokeStyle = '#fde4ea'; ctx.lineWidth = sq ? 18 : 24; ctx.stroke();
+  // plug
+  if (winT === 0){
+    const moving = Math.abs(plug.w) > 3, h = Math.min(1, plug.soft/3);
+    const th = Math.max(8, thc - 9*plug.soft);
+    const wob = (!moving && tilt > 0.6*th) ? Math.sin(performance.now()/25)*2 : 0;
+    ctx.save(); ctx.translate(plug.x + wob, plug.y);
+    ctx.fillStyle = `rgb(${92+70*h|0},${58+50*h|0},${30+30*h|0})`;
+    ctx.beginPath(); ctx.ellipse(0, 2, 14, 10, 0, 0, 6.3); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, -6, 8, 6, 0, 0, 6.3); ctx.fill();
+    ctx.fillStyle = '#fff'; [-5,5].forEach(x => { ctx.beginPath(); ctx.arc(x, 0, 3.4, 0, 6.3); ctx.fill(); });
+    ctx.fillStyle = '#222'; [-5,5].forEach(x => { ctx.beginPath(); ctx.arc(x+1, 0, 1.7, 0, 6.3); ctx.fill(); });
+    ctx.strokeStyle = '#222'; ctx.lineWidth = 1.8; ctx.beginPath();
+    if (moving) ctx.arc(0, 4, 4, 0.1*Math.PI, 0.9*Math.PI); else ctx.arc(0, 8, 4, 1.15*Math.PI, 1.85*Math.PI);
+    ctx.stroke(); ctx.restore();
+    // readout
+    ctx.fillStyle = '#3b2a1f'; ctx.font = '700 20px "Baloo 2", sans-serif'; ctx.textAlign = 'left';
+    const need = sq ? Math.asin(0.6*Math.sin(th*Math.PI/180))*180/Math.PI : th;
+    ctx.fillText('tilt ' + tilt.toFixed(0) + '°  /  needs ' + need.toFixed(0) + '°' + (sq ? '  (squeezing!)' : ''), 16, 26);
+    ctx.textAlign = 'center';
+  }
+  // handles
+  [[pts[0],'#ff7a59','1',hA],[pts[NSEG],'#4aa3df','2',hB]].forEach(([h,c,t,b]) => {
+    const held = Object.values(owners).some(o => o.h === b);
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(h.x, h.y, 0.8*S + (held ? 3 : 0), 0, 6.3); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = '700 24px "Baloo 2", sans-serif'; ctx.fillText(held ? '✋' : '📌', h.x, h.y+2);
+  });
+  conf.forEach(p => { ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot); ctx.fillStyle = p.c; ctx.fillRect(-p.r,-p.r/2,p.r*2,p.r); ctx.restore(); });
+}
+
+let last = performance.now();
+function loop(now){ const dt = Math.min(0.033, (now-last)/1000); last = now; step(dt); draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
